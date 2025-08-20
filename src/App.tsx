@@ -1,206 +1,230 @@
-// First, set up a new React app using create-react-app (free tool). Install Node.js from nodejs.org if not installed.
-// Run in terminal: npx create-react-app form-playground-app --template typescript
-// cd form-playground-app
-// npm install @bpmn-io/form-js-editor @bpmn-io/form-js-viewer html2canvas jspdf
-// Also need CSS: npm install @bpmn-io/form-js@latest --save (for assets)
-// Replace src/App.tsx with the following code.
-// Then run npm start to test locally.
-
-import React, { useRef, useEffect, useState, ChangeEvent } from 'react';
-import { FormEditor } from '@bpmn-io/form-js-editor';
-import { Form } from '@bpmn-io/form-js-viewer';
+import React from 'react';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
+// form-js CSS
 import '@bpmn-io/form-js/dist/assets/form-js.css';
 import '@bpmn-io/form-js/dist/assets/form-js-editor.css';
 
-function App() {
-  const editorRef = useRef<HTMLDivElement>(null);
-  const viewerRef = useRef<HTMLDivElement>(null);
-  const [editor, setEditor] = useState<FormEditor | null>(null);
-  const [form, setForm] = useState<Form | null>(null);
-  const [currentSchema, setCurrentSchema] = useState({ components: [], type: 'default' }); // Initial empty schema
-  const [currentData, setCurrentData] = useState({});
-  const [activeTab, setActiveTab] = useState<'editor' | 'preview'>('editor');
+import EditorPane, { EditorPaneHandle } from './components/EditorPane';
+import ViewerPane, { ViewerPaneHandle } from './components/ViewerPane';
+import BehaviorMatrix from './components/BehaviorMatrix';
 
-  useEffect(() => {
-    if (editorRef.current && viewerRef.current) {
-      const formEditor = new FormEditor({
-        container: editorRef.current,
-      });
+import { BehaviorMatrixValue } from './core/types';
+import { bundlesFromMatrix, matrixFromBundles } from './core/behaviors';
+import { enrichFormSchemaForState } from './core/enrich';
 
-      const formViewer = new Form({
-        container: viewerRef.current,
-      });
+const STATES = [
+  { id: 'entry', label: 'Entry' },
+  { id: 'review.section1', label: 'Review: Section 1' },
+  { id: 'review.section2', label: 'Review: Section 2' },
+  { id: 'approve', label: 'Approve' }
+];
 
-      setEditor(formEditor);
-      setForm(formViewer);
+export default function App() {
+  // refs
+  const editorRef = React.useRef<EditorPaneHandle>(null);
+  const viewerRef = React.useRef<ViewerPaneHandle>(null);
 
-      // Initial import
-      formEditor.importSchema(currentSchema).catch(console.error);
-      formViewer.importSchema(currentSchema, currentData).catch(console.error);
+  // core app state
+  const [activeTab, setActiveTab] = React.useState<'editor' | 'preview' | 'matrix'>('editor');
+  const [formState, setFormState] = React.useState<string>('entry');
 
-      // Listen to changes in editor
-      const handler = () => {
-        if (editor) {
-          try {
-            // @ts-ignore
-            const schema = editor.getSchema();
-            setCurrentSchema(schema);
-            form?.importSchema(schema, currentData).catch(console.error);
-          } catch (err) {
-            console.error('Error updating viewer:', err);
-          }
-        }
-      };
-      formEditor.on('changed', handler);
+  const [schema, setSchema] = React.useState<any>({ type: 'default', components: [] });
+  const [data, setData] = React.useState<any>({});
 
-      // Listen to changes in viewer (data changes)
-      formViewer.on('changed', (event: { data: any }) => {
-        setCurrentData(event.data);
-      });
+  // matrix & derived bundles
+  const [matrix, setMatrix] = React.useState<BehaviorMatrixValue>({});
+  const bundles = React.useMemo(
+    () => bundlesFromMatrix(matrix, STATES.map(s => s.id)),
+    [matrix]
+  );
 
-      return () => {
-        formEditor.off('changed', handler);
-        formEditor.destroy();
-        formViewer.destroy();
-      };
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // derive enriched schema for the CURRENT state
+  const enriched = React.useMemo(() => {
+    const b = bundles.find(x => x.state === formState) || { state: formState, action: 'view', rows: [] };
+    return enrichFormSchemaForState(schema, b);
+  }, [schema, formState, bundles]);
 
-  // Save Schema to file
+  // viewer readOnly: view OR (no editable cells and not entry)
+  const readOnly = React.useMemo(() => {
+    const b = bundles.find(x => x.state === formState);
+    const anyEditable = Object.values(matrix).some(row => row?.[formState]?.mode === 'editable');
+    return (b?.action === 'view') || (!anyEditable && formState !== 'entry');
+  }, [bundles, matrix, formState]);
+
+  // ----- Save / Load: Schema -----
   const saveSchema = () => {
-    if (editor) {
+    try {
+      const s = editorRef.current?.getSchema() ?? schema;
+      const blob = new Blob([JSON.stringify(s, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'form-schema.json'; a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) { console.error('Error saving schema:', err); }
+  };
+
+  const loadSchema = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      if (typeof ev.target?.result !== 'string') return;
       try {
-        // @ts-ignore
-        const schema = editor.getSchema();
-        const blob = new Blob([JSON.stringify(schema, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'form-schema.json';
-        a.click();
-        URL.revokeObjectURL(url);
-      } catch (err) {
-        console.error('Error saving schema:', err);
-      }
-    }
+        const next = JSON.parse(ev.target.result);
+        await editorRef.current?.importSchema(next);
+        setSchema(next);
+      } catch (err) { console.error('Error loading schema:', err); }
+    };
+    reader.readAsText(file);
   };
 
-  // Load Schema from file
-  const loadSchema = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file && editor) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        if (e.target?.result && typeof e.target.result === 'string') {
-          try {
-            const newSchema = JSON.parse(e.target.result);
-            editor.importSchema(newSchema).catch(console.error);
-            setCurrentSchema(newSchema);
-            form?.importSchema(newSchema, currentData).catch(console.error);
-          } catch (err) {
-            console.error('Error loading schema:', err);
-          }
-        }
-      };
-      reader.readAsText(file);
-    }
-  };
-
-  // Save Data to file
+  // ----- Save / Load: Data -----
   const saveData = () => {
-    const blob = new Blob([JSON.stringify(currentData, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ ...data, formState }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = 'form-data.json';
-    a.click();
+    a.href = url; a.download = 'form-data.json'; a.click();
     URL.revokeObjectURL(url);
   };
 
-  // Load Data from file
-  const loadData = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file && form) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        if (e.target?.result && typeof e.target.result === 'string') {
-          try {
-            const newData = JSON.parse(e.target.result);
-            setCurrentData(newData);
-            form.importSchema(currentSchema, newData).catch(console.error);
-          } catch (err) {
-            console.error('Error loading data:', err);
-          }
-        }
-      };
-      reader.readAsText(file);
-    }
+  const loadData = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      if (typeof ev.target?.result !== 'string') return;
+      try {
+        const next = JSON.parse(ev.target.result);
+        const newState = next.formState || formState;
+        setFormState(newState);
+        setData(next);
+      } catch (err) { console.error('Error loading data:', err); }
+    };
+    reader.readAsText(file);
   };
 
-  // Export Form to PDF
-  const exportToPDF = () => {
-    if (viewerRef.current) {
-      html2canvas(viewerRef.current).then((canvas) => {
-        const imgData = canvas.toDataURL('image/png');
-        const pdf = new jsPDF();
-        const imgProps = pdf.getImageProperties(imgData);
-        const pdfWidth = pdf.internal.pageSize.getWidth();
-        const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
-        pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-        pdf.save('form.pdf');
-      });
+  // ----- Save / Load: Behaviors (matrix or bundles) -----
+  const saveBehaviors = () => {
+    const blob = new Blob([JSON.stringify(matrix, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'behaviors-matrix.json'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const loadBehaviors = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      if (typeof ev.target?.result !== 'string') return;
+      try {
+        const obj = JSON.parse(ev.target.result);
+        if (Array.isArray(obj)) {
+          // bundles.json
+          setMatrix(matrixFromBundles(obj));
+        } else {
+          // matrix.json
+          setMatrix(obj as BehaviorMatrixValue);
+        }
+      } catch (err) { console.error('Error loading behaviors:', err); }
+    };
+    reader.readAsText(file);
+  };
+
+  // ----- Submit & PDF -----
+  const submitData = () => {
+    const res = viewerRef.current?.submit();
+    if (!res) return;
+    if (Object.keys(res.errors).length) {
+      console.warn('Validation errors', res.errors);
+      alert('Please fix validation errors');
+      return;
     }
+    alert(`Submitted JSON:\n\n${JSON.stringify(res.data, null, 2)}`);
+  };
+
+  const exportToPDF = async () => {
+    const el = viewerRef.current?.getContainer();
+    if (!el) return;
+    const canvas = await html2canvas(el);
+    const img = canvas.toDataURL('image/png');
+    const pdf = new jsPDF();
+    const props = pdf.getImageProperties(img);
+    const w = pdf.internal.pageSize.getWidth();
+    const h = (props.height * w) / props.width;
+    pdf.addImage(img, 'PNG', 0, 0, w, h);
+    pdf.save('form.pdf');
   };
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', background: '#f0f0f0', padding: '10px', gap: '10px' }}>
-        <button onClick={saveSchema}>Save Schema</button>
-        <input type="file" onChange={loadSchema} accept=".json" />
-        <button onClick={saveData}>Save Data</button>
-        <input type="file" onChange={loadData} accept=".json" />
-        <button onClick={exportToPDF}>Export to PDF</button>
+      {/* Toolbar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', background: '#f0f0f0', padding: 10, gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label>Form state:</label>
+          <select value={formState} onChange={(e) => setFormState(e.target.value)}>
+            {STATES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+          <button onClick={submitData}>Submit</button>
+          <button onClick={exportToPDF}>Export to PDF</button>
+        </div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={saveSchema}>Save Schema</button>
+          <input type="file" onChange={loadSchema} accept=".json" title="Load Schema" />
+          <button onClick={saveData}>Save Data</button>
+          <input type="file" onChange={loadData} accept=".json" title="Load Data" />
+          <button onClick={saveBehaviors}>Save Behaviors</button>
+          <input type="file" onChange={loadBehaviors} accept=".json" title="Load Behaviors (matrix or bundles JSON)" />
+        </div>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'center', background: '#e0e0e0', padding: '10px' }}>
-        <button 
-          onClick={() => setActiveTab('editor')} 
-          style={{ marginRight: '10px', fontWeight: activeTab === 'editor' ? 'bold' : 'normal' }}
-        >
+
+      {/* Tabs */}
+      <div style={{ display: 'flex', justifyContent: 'center', background: '#e0e0e0', padding: 10 }}>
+        <button onClick={() => setActiveTab('editor')}  style={{ marginRight: 10, fontWeight: activeTab === 'editor'  ? 'bold' : 'normal' }}>
           Form Editor
         </button>
-        <button 
-          onClick={() => setActiveTab('preview')} 
-          style={{ fontWeight: activeTab === 'preview' ? 'bold' : 'normal' }}
-        >
+        <button onClick={() => setActiveTab('preview')} style={{ marginRight: 10, fontWeight: activeTab === 'preview' ? 'bold' : 'normal' }}>
           Form Preview
         </button>
+        <button onClick={() => setActiveTab('matrix')}  style={{ fontWeight: activeTab === 'matrix'  ? 'bold' : 'normal' }}>
+          Behavior Matrix
+        </button>
       </div>
+
+      {/* Panes */}
       <div style={{ flex: 1 }}>
-        <div 
-          style={{ 
-            display: activeTab === 'editor' ? 'block' : 'none', 
-            height: '100%', 
-            width: '100%' 
-          }}
-        >
-          <div ref={editorRef} style={{ height: '100%' }}></div>
+        <div style={{ display: activeTab === 'editor' ? 'block' : 'none', height: '100%', width: '100%' }}>
+          <EditorPane
+            ref={editorRef}
+            schema={schema}
+            onSchemaChange={setSchema}
+            style={{ height: '100%' }}
+          />
         </div>
-        <div 
-          style={{ 
-            display: activeTab === 'preview' ? 'block' : 'none', 
-            height: '100%', 
-            width: '100%' 
-          }}
-        >
-          <div ref={viewerRef} style={{ height: '100%' }}></div>
+
+        <div style={{ display: activeTab === 'preview' ? 'block' : 'none', height: '100%', width: '100%' }}>
+          <ViewerPane
+            ref={viewerRef}
+            schema={enriched}
+            data={{ ...data, formState }}
+            readOnly={readOnly}
+            onDataChange={setData}
+            style={{ height: '100%' }}
+          />
+        </div>
+
+        <div style={{ display: activeTab === 'matrix' ? 'block' : 'none', height: '100%', width: '100%' }}>
+          <BehaviorMatrix
+            schema={schema}
+            states={STATES.map(s => s.id)}
+            value={matrix}
+            onChange={setMatrix}
+          />
         </div>
       </div>
     </div>
   );
 }
-
-export default App;
