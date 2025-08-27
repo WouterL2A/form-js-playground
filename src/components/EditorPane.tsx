@@ -19,6 +19,10 @@ const EditorPane = React.forwardRef<EditorPaneHandle, EditorPaneProps>(
     const containerRef = React.useRef<HTMLDivElement>(null);
     const editorRef = React.useRef<FormEditor | null>(null);
 
+    // keep latest callback without re-creating the editor
+    const onChangeRef = React.useRef(onSchemaChange);
+    React.useEffect(() => { onChangeRef.current = onSchemaChange; }, [onSchemaChange]);
+
     React.useEffect(() => {
       if (!containerRef.current) return;
       const editor = new FormEditor({ container: containerRef.current });
@@ -30,7 +34,7 @@ const EditorPane = React.forwardRef<EditorPaneHandle, EditorPaneProps>(
         try {
           // @ts-ignore - getSchema exists on editor
           const next = editor.getSchema();
-          onSchemaChange(next);
+          onChangeRef.current(next);
         } catch (err) {
           console.error('Editor change error', err);
         }
@@ -42,6 +46,8 @@ const EditorPane = React.forwardRef<EditorPaneHandle, EditorPaneProps>(
         editor.destroy();
         editorRef.current = null;
       };
+      // We intentionally mount only once; schema changes are pushed via ref.importSchema from parent.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []); // mount
 
     React.useImperativeHandle(ref, () => ({

@@ -1,52 +1,87 @@
-import { ActionContext, BehaviorBundle, BehaviorMatrixValue, FieldCell } from './types';
+// src/core/behaviors.ts
+// Matrix ⇄ Bundles using your types.
+
+import type {
+  BehaviorBundle,
+  BehaviorMatrixValue,
+  TaskFieldBehavior,
+  ActionContext
+} from './types';
 
 /**
- * Convert Behavior Matrix (UI) -> Behavior Bundles (engine/runtime)
- * - visible: mode !== 'hidden'
- * - required: checkbox
- * - action per state:
- *   - 'entry' => 'create'
- *   - else => 'update' if any cell is 'editable', otherwise 'view'
+ * Convert matrix (field×state) -> bundles[state].
+ * Matrix shape: matrix[fieldKey][state] = { mode: 'hidden'|'readonly'|'editable', required: boolean }
+ * Bundle shape (yours): { state, action, rows: TaskFieldBehavior[] }
  */
-export function bundlesFromMatrix(matrix: BehaviorMatrixValue, states: string[]): BehaviorBundle[] {
+export function bundlesFromMatrix(matrix: BehaviorMatrixValue, allStates: string[]): BehaviorBundle[] {
   const bundles: BehaviorBundle[] = [];
 
-  for (const s of states) {
+  for (const state of allStates) {
+    const rows: TaskFieldBehavior[] = [];
     let anyEditable = false;
-    Object.keys(matrix).forEach((field) => {
-      if (matrix[field][s]?.mode === 'editable') anyEditable = true;
+
+    for (const [fieldKey, byState] of Object.entries(matrix || {})) {
+      const cell = byState?.[state];
+      if (!cell) continue;
+
+      // Map cell -> TaskFieldBehavior
+      const visible = cell.mode !== 'hidden';
+      const isEditable = cell.mode === 'editable';
+      const required = !!cell.required && isEditable;
+
+      const action_context: ActionContext = isEditable ? 'update' : 'view';
+
+      if (isEditable) anyEditable = true;
+
+      rows.push({
+        field_name: fieldKey,
+        action_context,
+        visible,
+        required
+      });
+    }
+
+    const bundleAction: ActionContext = anyEditable ? 'update' : 'view';
+
+    bundles.push({
+      state,
+      action: bundleAction,
+      rows
     });
-
-    const action: ActionContext = s === 'entry' ? 'create' : (anyEditable ? 'update' : 'view');
-
-    const rows = Object.keys(matrix).map((field) => {
-      const cell = matrix[field][s] || { mode: 'hidden', required: false };
-      return {
-        field_name: field,
-        action_context: action,
-        visible: cell.mode !== 'hidden',
-        required: !!cell.required
-      };
-    });
-
-    bundles.push({ state: s, action, rows });
   }
 
   return bundles;
 }
 
 /**
- * Convert Behavior Bundles -> Behavior Matrix (UI)
+ * Convert bundles[state] -> matrix (field×state).
+ * Uses your TaskFieldBehavior rows (visible/required/action_context).
  */
 export function matrixFromBundles(bundles: BehaviorBundle[]): BehaviorMatrixValue {
-  const out: BehaviorMatrixValue = {};
-  for (const b of bundles) {
-    for (const row of b.rows) {
-      out[row.field_name] = out[row.field_name] || {};
-      const mode: FieldCell['mode'] =
-        row.visible === false ? 'hidden' : (b.action === 'view' ? 'readonly' : 'editable');
-      out[row.field_name][b.state] = { mode, required: !!row.required };
+  const m: BehaviorMatrixValue = {};
+
+  for (const b of bundles || []) {
+    for (const row of b.rows || []) {
+      const key = row.field_name;
+      // visible:false → hidden
+      // visible:true + action_context:view → readonly
+      // visible:true + action_context:(create|update) → editable
+      let mode: 'hidden' | 'readonly' | 'editable' = 'readonly';
+
+      if (row.visible === false) {
+        mode = 'hidden';
+      } else if (row.action_context === 'update' || row.action_context === 'create') {
+        mode = 'editable';
+      } else {
+        mode = 'readonly';
+      }
+
+      const required = mode === 'editable' ? !!row.required : false;
+
+      m[key] = m[key] || {};
+      m[key][b.state] = { mode, required };
     }
   }
-  return out;
+
+  return m;
 }

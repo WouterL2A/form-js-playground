@@ -23,3 +23,35 @@ export function extractFieldKeys(components: any[] = [], acc: string[] = []): st
   }
   return acc;
 }
+
+// ADD near the top or export block
+export interface FieldMeta {
+  key: string;
+  label?: string;
+  type?: string;
+}
+
+// NEW: extract fields with labels (recursive)
+export function extractFields(components: any[] = [], acc: FieldMeta[] = []): FieldMeta[] {
+  for (const c of components || []) {
+    if (!c) continue;
+
+    // Skip pure display components
+    if (c.type === 'text' || c.type === 'button') {
+      if (Array.isArray(c.components)) extractFields(c.components, acc);
+      continue;
+    }
+
+    if (c.key && typeof c.key === 'string') {
+      const label =
+        (typeof c.label === 'string' && c.label.trim()) ||
+        (typeof c.text === 'string' && c.text.trim()) ||
+        c.key;
+
+      acc.push({ key: c.key, label, type: c.type });
+    }
+
+    if (Array.isArray(c.components)) extractFields(c.components, acc);
+  }
+  return acc;
+}

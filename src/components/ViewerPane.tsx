@@ -67,9 +67,11 @@ const ViewerPane = React.forwardRef<ViewerPaneHandle, ViewerPaneProps>(
         onDataChangeRef.current?.(evt.data);
       };
 
+      // @ts-ignore - form-js uses a simple event bus
       form.on('changed', onFormChanged);
 
       return () => {
+        // @ts-ignore
         form.off('changed', onFormChanged);
         form.destroy();
         formRef.current = null;
@@ -78,15 +80,12 @@ const ViewerPane = React.forwardRef<ViewerPaneHandle, ViewerPaneProps>(
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // respond to SCHEMA or READONLY changes only
+    // respond to SCHEMA or READONLY changes (not to every data change)
     React.useEffect(() => {
       const form = formRef.current;
       if (!form) return;
 
       const schemaChanged = lastSchemaRef.current !== schema;
-      const readOnlyChanged =
-        // Using form-js state as source of truth is tricky; track by prop instead
-        undefined;
 
       if (schemaChanged) {
         suppressChangeRef.current = true;
@@ -101,7 +100,7 @@ const ViewerPane = React.forwardRef<ViewerPaneHandle, ViewerPaneProps>(
         // Only readOnly changed
         form.setProperty('readOnly', readOnly);
       }
-    }, [schema, readOnly, data]); // note: 'data' is read here only as a fallback for the very first pass
+    }, [schema, readOnly, data]); // 'data' is only used as a fallback on first import
 
     // respond to DATA-only changes
     React.useEffect(() => {
@@ -112,7 +111,7 @@ const ViewerPane = React.forwardRef<ViewerPaneHandle, ViewerPaneProps>(
       if (shallowEqual(data, lastDataRef.current)) return;
 
       // Prefer setData if available, else fallback to importSchema
-      // @ts-ignore - setData is available on form-js viewer instances
+      // @ts-ignore - setData exists on form-js viewer instances
       const setData = (form as any).setData ? (d: any) => (form as any).setData(d) : null;
 
       suppressChangeRef.current = true;
